@@ -1,0 +1,13 @@
+!SESSION 2021-12-20 17:26:50.135 -----------------------------------------------
+eclipse.buildId=unknown
+java.version=1.8.0_312
+java.vendor=Private Build
+BootLoader constants: OS=linux, ARCH=x86_64, WS=gtk, NL=en_US
+Framework arguments:  ./CUDA
+Command-line arguments:  -os linux -ws gtk -arch x86_64 -data @noDefault ./CUDA
+
+!ENTRY org.eclipse.osgi 4 0 2021-12-20 17:26:50.405
+!MESSAGE Bundle reference:file:org.eclipse.equinox.launcher.gtk.linux.x86_64_1.1.200.v20140603-1326/@4 not found.
+
+!ENTRY org.eclipse.ui 4 4 2021-12-20 17:27:25.723
+!MESSAGE Referenced part does not exist yet: org.eclipse.ui.editors.
