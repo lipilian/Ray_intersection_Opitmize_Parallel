@@ -1,4 +1,5 @@
 # %%
+from tkinter import Pack
 import prerun
 import importlib
 importlib.reload(prerun)
@@ -15,6 +16,12 @@ import matplotlib.pyplot as plt
 OpticInfo = prerun.prerun() # * Optic Information
 import Calibration; importlib.reload(Calibration)
 detected_Image, keypoints = Calibration.center_detect(OpticInfo['calibration_path'])
+Show_RawCloudPoints = False
+Video_RawCloudPoints = False
+Show_BallCloudPoints = False
+Video_BallCloudPoints = False
+Show_DBSCANCloudPoints = False
+Video_DBSCANCloudPoints = False
 # %% # * visualize the center detection image
 %matplotlib qt
 plt.figure()
@@ -68,64 +75,7 @@ for i in Selected_centers_index:
 plt.figure()
 plt.imshow(calibrationImage)
 plt.show()
-      
-# %% # brutal force 
-'''
-threshold = OpticInfo['minIntensity']
-ImagePath = OpticInfo['target_path']
-ImageLists = glob.glob(os.path.join(ImagePath,"*.tif"))
-img = mpimg.imread(ImageLists[0])
-start_time = time.time()
-img_binary = img < threshold
-img_binary = morphology.area_closing(img_binary, 2)
-Ifshow = False
-if Ifshow:
-    img_show = (img_binary * 255).astype('uint8')
-    cv2.imshow("target img",img_show)
 
-    while True:
-        key = cv2.waitKey(1) & 0xFF
-        if key == 27:
-            break
-    cv2.destroyAllWindows()
-
-Xmax = OpticInfo['xmax_mm'] # mm
-Xmin = OpticInfo['xmin_mm'] # mm
-Ymin = OpticInfo['ymin_mm'] # mm
-Ymax = OpticInfo['ymax_mm'] # mm
-Zmin = OpticInfo['dmin_mm'] # mm
-Zmax = OpticInfo['dmax_mm'] # mm
-MLA_diameter = OpticInfo['MLA_size_mm'] # mm
-Pixel_size = OpticInfo['pixel_mm'] # mm
-MLA_FLength = OpticInfo['MLA_F_mm'] # mm
-deltaX = MLA_diameter # select dx
-deltaY = MLA_diameter # select dy
-NumX = int((Xmax - Xmin) / deltaX)
-NumY = int((Ymax - Ymin) / deltaY)
-NumZ = int(OpticInfo['dnum']  + 1)
-
-RayCounts = np.zeros((NumX,NumY,NumZ), dtype = np.uint)
-m, n = img_binary.shape
-Z_level = np.linspace(Zmin, Zmax, NumZ)
-start_time = time.time()
-for Ray in Rays:
-    x_position = int(Ray[0])
-    y_position = int(Ray[1])
-    if not img_binary[y_position, x_position]:
-        for Zindex, Z in enumerate(Z_level):
-            scale = Z / MLA_FLength
-            newX, newY = (Ray[0:2] - Ray[2:4]) * Pixel_size * scale + Ray[2:4] * Pixel_size
-            Xindex = round((newX - Xmin) / deltaX)
-            Yindex = round((newY - Ymin) / deltaY)
-            RayCounts[Xindex,Yindex,Zindex] += 1
-end_time = time.time()
-
-print('the runing time for brutal force is {} ms'.format((end_time-start_time) * 1000))'''
-# %% 
-'''
-plt.figure()
-plt.hist(RayCounts.flatten(), bins = 30, range = (20, np.max(RayCounts.flatten())));
-plt.yscale('log')'''
 
 # %% cuda optimization 
 from numba import jit
@@ -156,9 +106,9 @@ deltaZ = Z_level[1] - Z_level[0]
 # * grid and block dimension definition
 Rays_Num = len(Rays) # TODO: increase number of threads to to match RayCounts size
 RayCounts_Num = NumX * NumY * NumZ # 
-DimBlock = 256
-#DimGrid = math.ceil(Rays_Num/DimBlock) # * Old one use number of rays instead of voxels
-DimGrid = math.ceil(RayCounts_Num/DimBlock) # * Use voxel numbers
+DimBlock = 1024
+DimGrid = math.ceil(Rays_Num/DimBlock) # * Old one use number of rays instead of voxels
+#DimGrid = math.ceil(RayCounts_Num/DimBlock) # * Use voxel numbers
 # * image loading
 X_1D = np.linspace(Xmin + deltaX / 2, Xmax- deltaX/2, NumX)
 Y_1D = np.linspace(Ymin + deltaY / 2, Ymax- deltaY/2, NumY)
@@ -211,49 +161,6 @@ def process_image_stacks(ImageLists, start_index, end_index):
                         Yindex = round((newY - Ymin) / deltaY)
                         index_Ray = i * (NumX*NumY*NumZ) + Zindex*(NumX * NumY) + Yindex * NumX + Xindex #? Maybe there is problem about indexing
                         cuda.atomic.add(device_RayCounts, index_Ray, 1)  
-    # ! begin to calculate local maximum of for RayCounts
-    '''
-    @cuda.jit # (device = True)
-    def LocalMaximum(device_RayCounts,
-                        NumX,
-                        NumY,
-                        NumZ,
-                        search_rangeX, 
-                        search_rangeZ, 
-                        minRayCount,
-                        Num_images):
-        gid = cuda.grid(1)
-        if gid < NumX * NumY * NumZ:
-            for i in range(Num_images):
-                LocalCounts = device_RayCounts[i * NumX * NumY * NumZ + gid]
-                LocalMax_Flag = True
-                if LocalCounts >= minRayCount:
-                    Zindex = gid //(NumX * NumY)
-                    remin = gid % (NumX * NumY)
-                    Yindex = remin // NumX
-                    Xindex = remin % NumX
-                    Xindex_min = Xindex - search_rangeX if Xindex - search_rangeX < 0 else 0
-                    Xindex_max = Xindex + search_rangeX if Xindex + search_rangeX >= NumX else NumX 
-                    Yindex_min = Yindex - search_rangeX if Yindex - search_rangeX < 0 else 0
-                    Yindex_max = Yindex + search_rangeX if Yindex + search_rangeX >= NumY else NumY
-                    Zindex_min = Zindex - search_rangeZ if Zindex - search_rangeZ < 0 else 0
-                    Zindex_max = Zindex + search_rangeZ if Zindex + search_rangeZ >= NumZ else NumZ
-                    
-                    for x in range(Xindex_min,Xindex_max):
-                        for y in range(Yindex_min,Yindex_max):
-                            for z in range(Zindex_min,Zindex_max):
-                                if device_RayCounts[i * (NumX*NumY*NumZ) + z*(NumX * NumY) + y * NumX + x] > LocalCounts:
-                                    LocalMax_Flag = False          
-                                      
-                else:
-                    LocalMax_Flag= False
-                if LocalMax_Flag:
-                    device_RayCounts[i * NumX * NumY * NumZ + gid] = 1
-                else:
-                    device_RayCounts[i * NumX * NumY * NumZ + gid] = 0'''
-        
-    
-                                        
 
     #local maximum value search
     img = mpimg.imread(ImageLists[0])
@@ -320,28 +227,39 @@ for i in tqdm(range(Numloops)):
 end_time = time.time()
 print('the runing time for  cuda optimization for each frame is {} ms'.format((end_time-start_time) * 1000 / NumImages))
 # %% Visualize raw cloud points data
-for i,RayCounts in enumerate(cloudpoints):
-    fig = plt.figure(1)
-    plt.clf()
-    ax = fig.add_subplot(121, projection='3d')
-    p = ax.scatter(RayCounts[:,0], RayCounts[:,1], RayCounts[:,2], c = RayCounts[:,3], cmap = 'jet', vmin = minRayCount, vmax = np.max(RayCounts[:,3]), s= 1)
-    ax.set_title('FrameID = {}'.format(i))
-    ax.set_xlim(Xmin, Xmax)
-    ax.set_ylim(Ymin, Ymax)
-    ax.set_zlim(Zmin, Zmax)
-    ax.view_init(32, -126)
-    #ax.view_init(-90,-90)
-    ax.set_xlabel('x(mm)')
-    ax.set_ylabel('y(mm)')
-    ax.set_zlabel('z(mm)')
-    img = mpimg.imread(ImageLists[i])
-    ax2 = fig.add_subplot(122)
-    ax2.imshow(img > threshold, cmap='gray')
-    fig.savefig('./result/minThreshold/' + str(i).zfill(5) + '.jpg', dpi = 300)
-
-  
-
-# %% Apply balltree and DBSCAN
+if Show_RawCloudPoints:
+    for i,RayCounts in enumerate(cloudpoints):
+        fig = plt.figure(1)
+        plt.clf()
+        ax = fig.add_subplot(121, projection='3d')
+        p = ax.scatter(RayCounts[:,0], RayCounts[:,1], RayCounts[:,2], c = RayCounts[:,3], cmap = 'jet', vmin = minRayCount, vmax = np.max(RayCounts[:,3]), s= 1)
+        ax.set_title('FrameID = {}'.format(i))
+        ax.set_xlim(Xmin, Xmax)
+        ax.set_ylim(Ymin, Ymax)
+        ax.set_zlim(Zmin, Zmax)
+        ax.view_init(32, -126)
+        #ax.view_init(-90,-90)
+        ax.set_xlabel('x(mm)')
+        ax.set_ylabel('y(mm)')
+        ax.set_zlabel('z(mm)')
+        img = mpimg.imread(ImageLists[i])
+        ax2 = fig.add_subplot(122)
+        ax2.imshow(img > threshold, cmap='gray')
+        fig.savefig('./result/minThreshold/' + str(i).zfill(5) + '.jpg', dpi = 300)
+if Video_RawCloudPoints:
+    image_folder = './result/minThreshold'
+    video_name = './result/minThreshold.avi'
+    ImageNames = os.listdir(image_folder)
+    ImageNames.sort() 
+    images = [img for img in ImageNames if img.endswith(".jpg")]
+    frame = cv2.imread(os.path.join(image_folder, images[0]))
+    height, width, layers = frame.shape
+    video = cv2.VideoWriter(video_name, cv2.VideoWriter_fourcc(*'MJPG'), 10, (width,height))
+    for image in images:
+        video.write(cv2.imread(os.path.join(image_folder, image)))
+    cv2.destroyAllWindows()
+    video.release()    
+# %% calculate ball tree
 from sklearn.cluster import DBSCAN
 from sklearn.neighbors import BallTree
 searchRange = 4 * deltaX
@@ -361,7 +279,7 @@ for i in tqdm(range(len(cloudpoints))):
     maxPoints = RayCounts[maxIndex, :]
     AllFrameMaxPoints.append(maxPoints)
     AllFrameCenterPoints_Num.append(len(maxPoints))
-# %% visualize number of points for each frame
+#visualize number of points for each frame
 AllFrameCenterPoints_Num = np.array(AllFrameCenterPoints_Num)
 plt.figure()
 plt.plot(AllFrameCenterPoints_Num)
@@ -369,30 +287,42 @@ plt.xlabel('frames')
 plt.ylabel('num of local maxpoints')
 plt.show()
 
-# %%
-for i,RayCounts in tqdm(enumerate(AllFrameMaxPoints)):
-    fig = plt.figure(1)
-    plt.clf()
-    ax = fig.add_subplot(121, projection='3d')
-    p = ax.scatter(RayCounts[:,0], RayCounts[:,1], RayCounts[:,2], c = RayCounts[:,3], cmap = 'jet', vmin = minRayCount, vmax = np.max(RayCounts[:,3]), s= 1)
-    ax.set_title('FrameID = {}'.format(i))
-    ax.set_xlim(Xmin, Xmax)
-    ax.set_ylim(Ymin, Ymax)
-    ax.set_zlim(Zmin, Zmax)
-    ax.view_init(32, -126)
-    #ax.view_init(-90,-90)
-    ax.set_xlabel('x(mm)')
-    ax.set_ylabel('y(mm)')
-    ax.set_zlabel('z(mm)')
-    img = mpimg.imread(ImageLists[i])
-    ax2 = fig.add_subplot(122)
-    ax2.imshow(img > threshold, cmap='gray')
-    fig.savefig('./result/maxPoints/' + str(i).zfill(5) + '.jpg', dpi = 300)
-    #plt.show() 
-
+# %% visualize ball tree figrue
+if Show_BallCloudPoints:
+    for i,RayCounts in tqdm(enumerate(AllFrameMaxPoints)):
+        fig = plt.figure(1)
+        plt.clf()
+        ax = fig.add_subplot(121, projection='3d')
+        p = ax.scatter(RayCounts[:,0], RayCounts[:,1], RayCounts[:,2], c = RayCounts[:,3], cmap = 'jet', vmin = minRayCount, vmax = np.max(RayCounts[:,3]), s= 1)
+        ax.set_title('FrameID = {}'.format(i))
+        ax.set_xlim(Xmin, Xmax)
+        ax.set_ylim(Ymin, Ymax)
+        ax.set_zlim(Zmin, Zmax)
+        ax.view_init(32, -126)
+        #ax.view_init(-90,-90)
+        ax.set_xlabel('x(mm)')
+        ax.set_ylabel('y(mm)')
+        ax.set_zlabel('z(mm)')
+        img = mpimg.imread(ImageLists[i])
+        ax2 = fig.add_subplot(122)
+        ax2.imshow(img > threshold, cmap='gray')
+        fig.savefig('./result/maxPoints/' + str(i).zfill(5) + '.jpg', dpi = 300)
+if Video_BallCloudPoints:
+    image_folder = './result/maxPoints'
+    video_name = './result/maxPoints.avi'
+    ImageNames = os.listdir(image_folder)
+    ImageNames.sort() 
+    images = [img for img in ImageNames if img.endswith(".jpg")]
+    frame = cv2.imread(os.path.join(image_folder, images[0]))
+    height, width, layers = frame.shape
+    video = cv2.VideoWriter(video_name, cv2.VideoWriter_fourcc(*'MJPG'), 10, (width,height))
+    for image in images:
+        video.write(cv2.imread(os.path.join(image_folder, image)))
+    cv2.destroyAllWindows()
+    video.release()   
     
     
- # %% visualize the cloud points
+ # %% clculate DBSCAN points
 AllFrameDBSCANPoints = []
 AllFrameDBSCANPoints_Num = []
 from sklearn.cluster import DBSCAN
@@ -414,16 +344,108 @@ plt.plot(AllFrameDBSCANPoints_Num)
 plt.xlabel('frames')
 plt.ylabel('num of particles after DBSCAN')
 plt.show()
+# %% visualize DBSCAN points
+if Show_DBSCANCloudPoints:
+    for i,RayCounts in tqdm(enumerate(AllFrameDBSCANPoints)):
+        fig = plt.figure(1)
+        plt.clf()
+        ax = fig.add_subplot(121, projection='3d')
+        p = ax.scatter(RayCounts[:,0], RayCounts[:,1], RayCounts[:,2], c = RayCounts[:,3], cmap = 'jet', vmin = minRayCount, vmax = np.max(RayCounts[:,3]), s= 1)
+        ax.set_title('FrameID = {}'.format(i))
+        ax.set_xlim(Xmin, Xmax)
+        ax.set_ylim(Ymin, Ymax)
+        ax.set_zlim(Zmin, Zmax)
+        ax.view_init(32, -126)
+        #ax.view_init(-90,-90)
+        ax.set_xlabel('x(mm)')
+        ax.set_ylabel('y(mm)')
+        ax.set_zlabel('z(mm)')
+        img = mpimg.imread(ImageLists[i])
+        ax2 = fig.add_subplot(122)
+        ax2.imshow(img > threshold, cmap='gray')
+        fig.savefig('./result/DBSCAN/' + str(i).zfill(5) + '.jpg', dpi = 300)
+if Video_DBSCANCloudPoints:
+    image_folder = './result/DBSCAN'
+    video_name = './result/DBSCAN.avi'
+    ImageNames = os.listdir(image_folder)
+    ImageNames.sort() 
+    images = [img for img in ImageNames if img.endswith(".jpg")]
+    frame = cv2.imread(os.path.join(image_folder, images[0]))
+    height, width, layers = frame.shape
+    video = cv2.VideoWriter(video_name, cv2.VideoWriter_fourcc(*'MJPG'), 10, (width,height))
+    for image in images:
+        video.write(cv2.imread(os.path.join(image_folder, image)))
+    cv2.destroyAllWindows()
+    video.release()   
+# %% trackpy and convert to objective space
+# negative depth mean far from focal plane, positive means closer to focal plane
+import trackpy as tp
+import pandas as pd
+maginification = OpticInfo['magnification']
+fLength = 25 # mm TODO: Add this into parmeter gui for future tuning.
+column_names = ['x','y','z','mass','frame']
+df = pd.DataFrame(columns = column_names)
+for FrameID, points in enumerate(AllFrameDBSCANPoints):
+    thisPoints = points.copy()
+    for i in range(len(thisPoints)):
+        thisPoints[i,0] /= maginification # convert to objective space
+        thisPoints[i,1] /= maginification
+        thisPoints[i,2] = (3.5 * fLength ** 2 + thisPoints[i,2] * fLength) / (2.5 * fLength + thisPoints[i,2]) -1.4 * fLength
+    thisPoints = np.append(thisPoints, np.ones([len(thisPoints), 1]) * FrameID, axis = 1)
+    thisPoints = pd.DataFrame(thisPoints, columns = column_names)
+    df = pd.concat([df, thisPoints])
+df.reset_index()
 # %%
-for i,RayCounts in tqdm(enumerate(AllFrameDBSCANPoints)):
+#t = tp.link(df, search_range=(2,0.5,0.5), memory = 10)
+t = tp.link(df, search_range=(2,0.5,0.5), memory = 50)
+t1 = tp.filter_stubs(t, 50)
+t1.index.name = ''
+t_new = t1[0:0]
+columns = t_new.columns
+for i in np.unique(t1['particle'].to_numpy()):
+    points = t1[t1['particle'] == i]
+    minFrame = np.min(points['frame'])
+    maxFrame = np.max(points['frame'])
+    extra_frames = []
+    for x in range(minFrame, maxFrame + 1):
+        if not x in points['frame']:
+            extra_frames.append([np.nan, np.nan, np.nan, 1, x, i])
+    extra_frames = pd.DataFrame(extra_frames,columns = points.columns)
+    points = points.append(extra_frames)
+    points = points.sort_values(by = ['frame'])
+    points = points.interpolate()
+    points = points.reset_index(drop=True)
+    x_new = savgol_filter(points['x'],31,5)
+    points['x'] = x_new
+    y_new = savgol_filter(points['y'],31,5)
+    points['y'] = y_new
+    z_new = savgol_filter(points['z'],31,5)
+    points['z'] = z_new
+    t_new = pd.concat([t_new, points])
+
+# %%
+plt.figure()
+tp.plot_traj3d(t_new) # TODO: Using ball tree angin to link trajetory in x,y,z,and time domain
+# %%
+min_Frame = np.min(t_new['frame'])
+max_Frame = np.max(t_new['frame'])
+# %%
+Xmin_new = np.min(t_new['x'] - 1)
+Xmax_new = np.max(t_new['x'] + 1)
+Ymin_new = np.min(t_new['y'] - 1)
+Ymax_new = np.max(t_new['y'] + 1)
+Zmin_new = np.min(t_new['z'] - 1)
+Zmax_new = np.max(t_new['z'] + 1)
+for i in range(min_Frame, max_Frame + 1):
     fig = plt.figure(1)
     plt.clf()
     ax = fig.add_subplot(121, projection='3d')
-    p = ax.scatter(RayCounts[:,0], RayCounts[:,1], RayCounts[:,2], c = RayCounts[:,3], cmap = 'jet', vmin = minRayCount, vmax = np.max(RayCounts[:,3]), s= 1)
+    RayCounts = t_new[t_new['frame'] == i].to_numpy()
+    p = ax.scatter(RayCounts[:,0], RayCounts[:,1], RayCounts[:,2],c = RayCounts[:,5], cmap = 'jet', vmin = np.min(t_new['particle']), vmax = np.max(t_new['particle']), s= 1)
     ax.set_title('FrameID = {}'.format(i))
-    ax.set_xlim(Xmin, Xmax)
-    ax.set_ylim(Ymin, Ymax)
-    ax.set_zlim(Zmin, Zmax)
+    ax.set_xlim(Xmin_new, Xmax_new)
+    ax.set_ylim(Ymin_new, Ymax_new)
+    ax.set_zlim(Zmin_new, Zmax_new)
     ax.view_init(32, -126)
     #ax.view_init(-90,-90)
     ax.set_xlabel('x(mm)')
@@ -432,6 +454,21 @@ for i,RayCounts in tqdm(enumerate(AllFrameDBSCANPoints)):
     img = mpimg.imread(ImageLists[i])
     ax2 = fig.add_subplot(122)
     ax2.imshow(img > threshold, cmap='gray')
-    fig.savefig('./result/DBSCAN/' + str(i).zfill(5) + '.jpg', dpi = 300)
-    #plt.show() 
+    fig.savefig('./result/Trackpy/' + str(i).zfill(5) + '.jpg', dpi = 300)
+# %% show final result
+image_folder = './result/Trackpy'
+video_name = './result/Trackpy.avi'
+ImageNames = os.listdir(image_folder)
+ImageNames.sort() 
+images = [img for img in ImageNames if img.endswith(".jpg")]
+frame = cv2.imread(os.path.join(image_folder, images[0]))
+height, width, layers = frame.shape
+video = cv2.VideoWriter(video_name, cv2.VideoWriter_fourcc(*'MJPG'), 10, (width,height))
+for image in images:
+    video.write(cv2.imread(os.path.join(image_folder, image)))
+cv2.destroyAllWindows()
+video.release()   
+
+# # %%
+
 # %%
