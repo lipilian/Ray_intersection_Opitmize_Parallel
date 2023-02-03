@@ -2,4 +2,5 @@ method                 processing Time(ms):
 brutal force           1911.45
 Simd                   774.524
 OpenMP                 290.699
+CUDA                   65.073
 MPI & OpenMP           2 nodes and 32 processor 123.24ms
